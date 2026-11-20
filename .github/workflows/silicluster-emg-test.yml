@@ -1,0 +1,37 @@
+name: Silicluster Real EMG Test
+
+on:
+  push:
+    paths:
+      - 'silicluster_emg_core.v'
+      - 'silicluster_emg_top.v'
+      - 'tb_emg_real.v'
+      - 'test/*.hex'
+      - '.github/workflows/silicluster-emg-test.yml'
+  workflow_dispatch:
+
+jobs:
+  emg-real:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install Icarus Verilog
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iverilog
+      - name: Compile 12-bit MAV real-data test
+        run: |
+          iverilog -g2012 -Wall -s tb_emg_real -o sim_emg.vvp \
+            silicluster_emg_core.v \
+            silicluster_emg_top.v \
+            tb_emg_real.v
+      - name: Simulate 16000 real samples
+        run: vvp sim_emg.vvp | tee emg_results.txt
+      - name: Save simulation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emg-real-report
+          path: emg_results.txt
+          if-no-files-found: warn

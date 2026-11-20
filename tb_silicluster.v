@@ -36,37 +36,37 @@ module tb_silicluster;
       $dumpfile("silicluster_emg.vcd"); $dumpvars(0,tb_silicluster);
       repeat (2) @(negedge clk); rst=0;
       if (data_valid !== 1'b0 || error_flag !== 1'b0 || activity !== 1'b0) begin
-        $display("FAIL: incorrect reset status"); $finish;
+        $display("FAIL: incorrect reset status"); $finish_and_return(1);;
       end
       // Defaults: offset=1995, high=16. 64 samples of 2015 => MAV=20, active=1.
       for (k=0;k<64;k=k+1) write_word(8'd0,12'd2015);
       if (data_valid !== 1'b1 || error_flag !== 1'b0) begin
-        $display("FAIL: valid/error status after full window"); $finish;
+        $display("FAIL: valid/error status after full window"); $finish_and_return(1);;
       end
       if (activity !== 1'b1) begin
-        $display("FAIL: activity expected 1"); $finish;
+        $display("FAIL: activity expected 1"); $finish_and_return(1);;
       end
       write_byte(8'd4,1'b1); // snapshot
       view=2'b10; byte_select=0;
       #1;
       if (data_out !== 8'd20) begin
-        $display("FAIL: MAV expected 20, obtained %d",data_out); $finish;
+        $display("FAIL: MAV expected 20, obtained %d",data_out); $finish_and_return(1);;
       end
       // 64 samples at offset => MAV=0 => inactive.
       for (k=0;k<64;k=k+1) write_word(8'd0,12'd1995);
       if (activity !== 1'b0) begin
-        $display("FAIL: activity expected 0"); $finish;
+        $display("FAIL: activity expected 0"); $finish_and_return(1);;
       end
       if (data_valid !== 1'b1) begin
-        $display("FAIL: data_valid unexpectedly low"); $finish;
+        $display("FAIL: data_valid unexpectedly low"); $finish_and_return(1);;
       end
       write_byte(8'd99,1'b1); // Invalid command must flag an error.
       if (error_flag !== 1'b1) begin
-        $display("FAIL: invalid command not flagged"); $finish;
+        $display("FAIL: invalid command not flagged"); $finish_and_return(1);;
       end
       write_byte(8'd5,1'b1); // Clear error.
       if (error_flag !== 1'b0) begin
-        $display("FAIL: error did not clear"); $finish;
+        $display("FAIL: error did not clear"); $finish_and_return(1);;
       end
       $display("PASS: Silicluster wrapper + status smoke test"); $finish;
     end

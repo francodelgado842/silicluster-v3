@@ -1,0 +1,28 @@
+
+name: Silicluster Synthesis Check
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  synthesis:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Yosys
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y yosys
+
+      - name: Run synthesis
+        run: |
+          yosys -p '
+            read_verilog silicluster_emg_core.v silicluster_emg_top.v
+            hierarchy -check -top silicluster_emg_top
+            synth -top silicluster_emg_top
+            check -assert
+            stat
+          '

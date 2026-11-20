@@ -1,5 +1,5 @@
 `default_nettype none
-// Silicluster v3 candidate interface: 14 digital inputs, 11 digital outputs,
+// Silicluster v3 candidate interface: 14 digital inputs, 13 digital outputs,
 // plus external clock and active-high reset.
 // Only translates the TinyTapeout interface; arithmetic core unchanged.
 module silicluster_emg_top (

@@ -1,0 +1,38 @@
+
+name: Silicluster RTL Check
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  rtl:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Icarus Verilog
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iverilog
+
+      - name: Compile
+        run: |
+          iverilog -g2005 -Wall \
+            -s tb_silicluster \
+            -o sim.vvp \
+            silicluster_emg_core.v \
+            silicluster_emg_top.v \
+            tb_silicluster.v
+
+      - name: Simulate
+        run: vvp sim.vvp
+
+      - name: Upload waveform
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emg-waveform
+          path: silicluster_emg.vcd

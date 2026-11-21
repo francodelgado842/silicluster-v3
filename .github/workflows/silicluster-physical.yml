@@ -7,7 +7,12 @@ jobs:
   physical:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    permissions:
+      contents: read
     env:
+      # Authenticate GitHub API queries used by Volare.
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
       PDK_ROOT: ${{ github.workspace }}/pdks
     steps:
       - name: Checkout source
@@ -31,6 +36,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p physical_artifacts
+          # Credentials must be available to the API client.
+          test -n "$GH_TOKEN" || { echo "Missing GitHub token"; exit 1; }
           volare ls-remote --pdk sky130 2>&1 | tee physical_artifacts/volare_releases.log
           python3 - <<'PYCODE'
           import os, re

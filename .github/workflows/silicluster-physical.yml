@@ -11,6 +11,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
       PDK_ROOT: ${{ github.workspace }}/pdks
       IMAGE: ghcr.io/librelane/librelane:3.0.17
       OPEN_PDKS_REV: c6d73a35f524070e85faff4a6a9eef49553ebc2b
@@ -19,72 +21,67 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Check configuration and RTL
+      - name: Check design configuration
         shell: bash
         run: |
           set -euo pipefail
           python3 -m json.tool physical/config.json >/dev/null
           test -s silicluster_emg_core.v
           test -s silicluster_emg_top.v
-          echo 'Configuration and RTL files found.'
+          mkdir -p physical_artifacts
+          echo 'RTL and config found.'
 
-      - name: Install Volare
+      - name: Install Volare and authenticated SKY130 PDK
         shell: bash
         run: |
           set -euo pipefail
           python3 -m pip install --upgrade --break-system-packages volare
-          volare --version
-
-      - name: Install known working SKY130 PDK revision
-        shell: bash
-        run: |
-          set -euo pipefail
           mkdir -p "$PDK_ROOT" physical_artifacts
-          volare enable --pdk sky130 --pdk-root "$PDK_ROOT" "$OPEN_PDKS_REV" 2>&1 | tee physical_artifacts/pdk_install.log
-          test -d "$PDK_ROOT/sky130A" || { echo 'ERROR: sky130A was not installed'; exit 1; }
+          volare enable --pdk sky130 --pdk-root "$PDK_ROOT" "$OPEN_PDKS_REV" \
+            2>&1 | tee physical_artifacts/volare-install.log
+          test -d "$PDK_ROOT/sky130A"
+          echo 'Confirmed sky130A installation.'
 
-      - name: Inspect Docker image without launching a shell
+      - name: Inspect actual Docker shell
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p physical_artifacts
           docker pull "$IMAGE"
-          # docker image inspect does NOT accept docker run flags such as --rm.
           docker image inspect "$IMAGE" \
             --format 'Entrypoint={{json .Config.Entrypoint}} Cmd={{json .Config.Cmd}}' \
-            | tee physical_artifacts/docker_image_info.txt
-          docker image inspect "$IMAGE" --format '{{json .Config.Entrypoint}}' > physical_artifacts/entrypoint.json
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-          ep = json.loads(Path('physical_artifacts/entrypoint.json').read_text())
-          print('Docker entrypoint:', ep)
-          if not ep:
-              print('NOTE: Image has no ENTRYPOINT; a command must be supplied to docker run.')
-          PY
+            | tee physical_artifacts/docker-image.txt
+          # The verified LibreLane 3.0.17 image has no ENTRYPOINT.
+          # Its CMD contains the actual Nix-installed zsh binary.
+          docker image inspect "$IMAGE" --format '{{json .Config.Cmd}}' \
+            | python3 -c 'import json,sys; cmd=json.load(sys.stdin); assert isinstance(cmd,list) and cmd and cmd[0].endswith("/zsh"), f"Unexpected Docker CMD: {cmd}"; print(cmd[0])' \
+            > physical_artifacts/container-shell.txt
+          echo "Container shell: $(cat physical_artifacts/container-shell.txt)"
 
-      - name: Run SKY130 physical flow using image entrypoint
+      - name: Confirm LibreLane executable inside container
         shell: bash
         run: |
           set -euo pipefail
-          # No --entrypoint /bin/bash, no -it: GitHub Actions is non-interactive.
-          # Use the image's own ENTRYPOINT; do not guess an internal shell path.
-          if [ "$(cat physical_artifacts/entrypoint.json)" = 'null' ] || [ "$(cat physical_artifacts/entrypoint.json)" = '[]' ]; then
-            echo 'ERROR: Docker image has no ENTRYPOINT. See docker_image_info.txt in artifacts.'
-            echo 'Do not guess executable paths. Identify the command from the image metadata first.'
-            exit 1
-          fi
-          docker run --rm --init \
-            --user "$(id -u):$(id -g)" \
+          CONTAINER_SHELL="$(cat physical_artifacts/container-shell.txt)"
+          docker run --rm \
+            --entrypoint "$CONTAINER_SHELL" \
+            "$IMAGE" -lc 'command -v librelane && librelane --version' \
+            2>&1 | tee physical_artifacts/librelane-check.log
+
+      - name: Run SKY130 synthesis and physical flow
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONTAINER_SHELL="$(cat physical_artifacts/container-shell.txt)"
+          docker run --rm \
+            --entrypoint "$CONTAINER_SHELL" \
             --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspace" \
             --mount "type=bind,source=$PDK_ROOT,target=/pdks,readonly" \
             --workdir /workspace \
             --env PDK_ROOT=/pdks \
-            "$IMAGE" \
-            --pdk-root /pdks physical/config.json \
-            2>&1 | tee physical_artifacts/physical_flow.log
+            "$IMAGE" -lc 'librelane --pdk-root /pdks /workspace/physical/config.json' \
+            2>&1 | tee physical_artifacts/physical-flow.log
 
-      - name: Collect results
+      - name: Collect reports
         if: always()
         shell: bash
         run: |
@@ -92,8 +89,11 @@ jobs:
           if [ -d physical/runs ]; then
             cp -a physical/runs physical_artifacts/ || true
           fi
+          find physical -maxdepth 4 -type f \
+            \( -name '*.json' -o -name '*.rpt' -o -name '*.log' \) \
+            > physical_artifacts/discovered-files.txt || true
 
-      - name: Upload physical diagnostics and reports
+      - name: Upload physical reports
         if: always()
         uses: actions/upload-artifact@v4
         with:

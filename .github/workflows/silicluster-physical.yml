@@ -26,10 +26,22 @@ jobs:
           librelane --version
           volare --help | head -35
 
+      
       - name: Install SKY130 PDK
         run: |
           mkdir -p "$PDK_ROOT"
-          volare enable --pdk sky130 --pdk-root "$PDK_ROOT"
+
+          # Obtener la revision de open_pdks usada por LibreLane
+          PDK_VERSION=$(python -c \
+            "from librelane.config import get_pdk_revision; print(get_pdk_revision('sky130'))")
+
+          echo "Using SKY130 PDK revision: $PDK_VERSION"
+
+          volare enable \
+            --pdk sky130 \
+            --pdk-root "$PDK_ROOT" \
+            "$PDK_VERSION"
+
 
       - name: Run SKY130 synthesis and physical flow
         run: |

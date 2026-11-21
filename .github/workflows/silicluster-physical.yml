@@ -3,102 +3,97 @@ name: Silicluster SKY130 Physical Check
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   physical:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    permissions:
-      contents: read
     env:
-      # Authenticate GitHub API queries used by Volare.
-      GH_TOKEN: ${{ github.token }}
-      GITHUB_TOKEN: ${{ github.token }}
       PDK_ROOT: ${{ github.workspace }}/pdks
+      IMAGE: ghcr.io/librelane/librelane:3.0.17
+      OPEN_PDKS_REV: c6d73a35f524070e85faff4a6a9eef49553ebc2b
+
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
 
       - name: Check configuration and RTL
+        shell: bash
         run: |
+          set -euo pipefail
           python3 -m json.tool physical/config.json >/dev/null
           test -s silicluster_emg_core.v
           test -s silicluster_emg_top.v
           echo 'Configuration and RTL files found.'
 
-      - name: Install LibreLane and Volare
-        run: |
-          python3 -m pip install --upgrade --break-system-packages librelane volare
-          librelane --version
-          volare --help
-
-      - name: Discover SKY130 PDK releases
+      - name: Install Volare
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p physical_artifacts
-          # Credentials must be available to the API client.
-          test -n "$GH_TOKEN" || { echo "Missing GitHub token"; exit 1; }
-          volare ls-remote --pdk sky130 2>&1 | tee physical_artifacts/volare_releases.log
-          python3 - <<'PYCODE'
-          import os, re
-          from pathlib import Path
-          report = Path('physical_artifacts/volare_releases.log').read_text()
-          sha = re.search(r'(?<![0-9a-fA-F])[0-9a-fA-F]{40}(?![0-9a-fA-F])', report)
-          if not sha:
-              raise SystemExit('No 40-character SHA in Volare releases. See volare_releases.log before changing anything.')
-          version = sha.group(0)
-          with open(os.environ['GITHUB_ENV'], 'a') as f:
-              f.write(f'OPEN_PDKS_REV={version}\n')
-          print('Selected Volare-listed open_pdks revision:', version)
-          PYCODE
+          python3 -m pip install --upgrade --break-system-packages volare
+          volare --version
 
-      - name: Install SKY130 PDK
+      - name: Install known working SKY130 PDK revision
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$PDK_ROOT"
+          mkdir -p "$PDK_ROOT" physical_artifacts
           volare enable --pdk sky130 --pdk-root "$PDK_ROOT" "$OPEN_PDKS_REV" 2>&1 | tee physical_artifacts/pdk_install.log
-          test -d "$PDK_ROOT/sky130A" || { echo 'PDK sky130A missing'; exit 1; }
+          test -d "$PDK_ROOT/sky130A" || { echo 'ERROR: sky130A was not installed'; exit 1; }
 
-      - name: Run SKY130 synthesis and physical flow (non-interactive Docker)
+      - name: Inspect Docker image without launching a shell
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p physical_artifacts
-          echo 'Checking mounted PDK before running the flow...'
-          test -d "$PDK_ROOT/sky130A" || { echo 'Missing sky130A installation'; exit 1; }
-          echo 'Checking Docker image...'
-          docker image inspect ghcr.io/librelane/librelane:3.0.17 >/dev/null || docker pull ghcr.io/librelane/librelane:3.0.17
-          echo "Inspecting LibreLane Docker image..."
+          docker pull "$IMAGE"
+          # docker image inspect does NOT accept docker run flags such as --rm.
+          docker image inspect "$IMAGE" \
+            --format 'Entrypoint={{json .Config.Entrypoint}} Cmd={{json .Config.Cmd}}' \
+            | tee physical_artifacts/docker_image_info.txt
+          docker image inspect "$IMAGE" --format '{{json .Config.Entrypoint}}' > physical_artifacts/entrypoint.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          ep = json.loads(Path('physical_artifacts/entrypoint.json').read_text())
+          print('Docker entrypoint:', ep)
+          if not ep:
+              print('NOTE: Image has no ENTRYPOINT; a command must be supplied to docker run.')
+          PY
 
-          docker image inspect \
-            ghcr.io/librelane/librelane:3.0.17 \
-            --format 'Entrypoint={{json .Config.Entrypoint}} Cmd={{json .Config.Cmd}}'          docker run --rm \
-            --entrypoint /bin/bash \
-            ghcr.io/librelane/librelane:3.0.17 \
-            -lc 'command -v librelane && librelane --version'
-          echo 'Starting non-interactive physical flow (no -it and no TTY)...'
+      - name: Run SKY130 physical flow using image entrypoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          # No --entrypoint /bin/bash, no -it: GitHub Actions is non-interactive.
+          # Use the image's own ENTRYPOINT; do not guess an internal shell path.
+          if [ "$(cat physical_artifacts/entrypoint.json)" = 'null' ] || [ "$(cat physical_artifacts/entrypoint.json)" = '[]' ]; then
+            echo 'ERROR: Docker image has no ENTRYPOINT. See docker_image_info.txt in artifacts.'
+            echo 'Do not guess executable paths. Identify the command from the image metadata first.'
+            exit 1
+          fi
           docker run --rm --init \
             --user "$(id -u):$(id -g)" \
             --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspace" \
             --mount "type=bind,source=$PDK_ROOT,target=/pdks,readonly" \
             --workdir /workspace \
             --env PDK_ROOT=/pdks \
-            --entrypoint /bin/bash \
-            ghcr.io/librelane/librelane:3.0.17 \
-            -lc 'librelane --pdk-root /pdks physical/config.json' \
+            "$IMAGE" \
+            --pdk-root /pdks physical/config.json \
             2>&1 | tee physical_artifacts/physical_flow.log
 
-      - name: Collect run results
+      - name: Collect results
         if: always()
+        shell: bash
         run: |
           mkdir -p physical_artifacts
           if [ -d physical/runs ]; then
-            cp -r physical/runs physical_artifacts/
+            cp -a physical/runs physical_artifacts/ || true
           fi
-          echo 'Review physical_artifacts for logs and generated metrics.'
 
-      - name: Upload physical reports
+      - name: Upload physical diagnostics and reports
         if: always()
         uses: actions/upload-artifact@v4
         with:

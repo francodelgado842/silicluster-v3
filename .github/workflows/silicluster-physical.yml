@@ -69,8 +69,11 @@ jobs:
           test -d "$PDK_ROOT/sky130A" || { echo 'Missing sky130A installation'; exit 1; }
           echo 'Checking Docker image...'
           docker image inspect ghcr.io/librelane/librelane:3.0.17 >/dev/null || docker pull ghcr.io/librelane/librelane:3.0.17
-          echo 'Checking LibreLane command INSIDE the container...'
-          docker run --rm \
+          echo "Inspecting LibreLane Docker image..."
+
+          docker image inspect \
+            ghcr.io/librelane/librelane:3.0.17 \
+            --format 'Entrypoint={{json .Config.Entrypoint}} Cmd={{json .Config.Cmd}}'          docker run --rm \
             --entrypoint /bin/bash \
             ghcr.io/librelane/librelane:3.0.17 \
             -lc 'command -v librelane && librelane --version'

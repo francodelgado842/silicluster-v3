@@ -22,63 +22,51 @@ jobs:
 
       - name: Install LibreLane and Volare
         run: |
-          python3 -m pip install --upgrade --break-system-packages librelane volare pyyaml
+          python3 -m pip install --upgrade --break-system-packages librelane volare
           librelane --version
-          volare --help | head -35
+          volare --help
 
-      - name: Resolve official SKY130 PDK revision
+      - name: Discover SKY130 PDK releases
         shell: bash
         run: |
           set -euo pipefail
-          # A working tree installed from PyPI does not contain tool_metadata.yml.
-          # Retrieve the matching open_pdks revision from LibreLane's public metadata.
-          curl --fail --location --retry 3 --silent --show-error \
-            https://raw.githubusercontent.com/efabless/librelane/main/dependencies/tool_metadata.yml \
-            --output /tmp/librelane_tool_metadata.yml
-          python3 - <<'PY'
-          import os
-          import re
-          import yaml
+          mkdir -p physical_artifacts
+          volare ls-remote --pdk sky130 2>&1 | tee physical_artifacts/volare_releases.log
+          python3 - <<'PYCODE'
+          import os, re
           from pathlib import Path
-          data = yaml.safe_load(Path('/tmp/librelane_tool_metadata.yml').read_text())
-          item = data.get('open_pdks') if isinstance(data, dict) else None
-          if isinstance(item, dict):
-              item = item.get('commit') or item.get('rev') or item.get('revision')
-          if not isinstance(item, str) or not re.fullmatch(r'[0-9a-fA-F]{7,40}', item):
-              raise SystemExit('Cannot read open_pdks commit from LibreLane metadata; inspect /tmp/librelane_tool_metadata.yml structure.')
+          report = Path('physical_artifacts/volare_releases.log').read_text()
+          sha = re.search(r'(?<![0-9a-fA-F])[0-9a-fA-F]{40}(?![0-9a-fA-F])', report)
+          if not sha:
+              raise SystemExit('No 40-character SHA in Volare releases. See volare_releases.log before changing anything.')
+          version = sha.group(0)
           with open(os.environ['GITHUB_ENV'], 'a') as f:
-              f.write('OPEN_PDKS_REV=' + item + '\n')
-          print('open_pdks commit:', item)
-          PY
+              f.write(f'OPEN_PDKS_REV={version}\n')
+          print('Selected Volare-listed open_pdks revision:', version)
+          PYCODE
 
       - name: Install SKY130 PDK
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$PDK_ROOT"
-          volare enable --pdk sky130 --pdk-root "$PDK_ROOT" "$OPEN_PDKS_REV"
-          test -d "$PDK_ROOT/sky130A" || { echo 'SKY130A directory missing after Volare activation'; exit 1; }
-          echo "SKY130A installed: $PDK_ROOT/sky130A"
+          volare enable --pdk sky130 --pdk-root "$PDK_ROOT" "$OPEN_PDKS_REV" 2>&1 | tee physical_artifacts/pdk_install.log
+          test -d "$PDK_ROOT/sky130A" || { echo 'PDK sky130A missing'; exit 1; }
 
       - name: Run SKY130 synthesis and physical flow
         shell: bash
         run: |
-          set -o pipefail
-          librelane --dockerized --pdk-root "$PDK_ROOT" physical/config.json 2>&1 | tee physical_flow.log
+          set -euo pipefail
+          librelane --dockerized --pdk-root "$PDK_ROOT" physical/config.json 2>&1 | tee physical_artifacts/physical_flow.log
 
       - name: Collect run results
         if: always()
-        shell: bash
         run: |
           mkdir -p physical_artifacts
           if [ -d physical/runs ]; then
             cp -r physical/runs physical_artifacts/
           fi
-          if [ -f physical_flow.log ]; then
-            cp physical_flow.log physical_artifacts/
-          fi
-          cp physical/config.json physical_artifacts/config.json
-          echo 'Inspect physical_flow.log, metrics, reports, and final/.'
+          echo 'Review physical_artifacts for logs and generated metrics.'
 
       - name: Upload physical reports
         if: always()

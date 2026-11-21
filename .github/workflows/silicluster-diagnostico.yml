@@ -1,0 +1,62 @@
+name: Silicluster SKY130 Environment Diagnostics
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostics:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      PDK_ROOT: ${{ github.workspace }}/pdks
+      IMAGE: ghcr.io/librelane/librelane:3.0.17
+      OPEN_PDKS_REV: c6d73a35f524070e85faff4a6a9eef49553ebc2b
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check files and tool versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f physical/config.json
+          test -f silicluster_emg_core.v
+          test -f silicluster_emg_top.v
+          python3 -m json.tool physical/config.json >/dev/null
+          python3 -m pip install --upgrade --break-system-packages volare
+          volare --version
+          docker --version
+          echo 'Token provided to environment: yes (value not displayed)'
+          test -n "$GITHUB_TOKEN"
+
+      - name: Diagnose Docker image entrypoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics
+          docker pull "$IMAGE"
+          docker image inspect "$IMAGE" --format 'Entrypoint={{json .Config.Entrypoint}} Cmd={{json .Config.Cmd}} User={{json .Config.User}} WorkingDir={{json .Config.WorkingDir}}' | tee diagnostics/docker-image.txt
+          echo 'Image inspection completed without running a container.'
+
+      - name: Test authenticated PDK installation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PDK_ROOT" diagnostics
+          volare enable --pdk sky130 --pdk-root "$PDK_ROOT" "$OPEN_PDKS_REV" 2>&1 | tee diagnostics/volare-install.log
+          test -d "$PDK_ROOT/sky130A"
+          echo 'PDK sky130A is present.'
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: silicluster-environment-diagnostics
+          path: diagnostics/
+          if-no-files-found: warn

@@ -1,0 +1,54 @@
+name: Silicluster SKY130 Physical Check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  physical:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      PDK_ROOT: ${{ github.workspace }}/pdks
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Check configuration and RTL
+        run: |
+          python3 -m json.tool physical/config.json >/dev/null
+          test -s silicluster_emg_core.v
+          test -s silicluster_emg_top.v
+          echo 'Configuration and RTL files found.'
+
+      - name: Install LibreLane and Volare
+        run: |
+          python3 -m pip install --upgrade --break-system-packages librelane volare
+          librelane --version
+          volare --help | head -35
+
+      - name: Install SKY130 PDK
+        run: |
+          mkdir -p "$PDK_ROOT"
+          volare enable --pdk sky130 --pdk-root "$PDK_ROOT"
+
+      - name: Run SKY130 synthesis and physical flow
+        run: |
+          librelane --dockerized --pdk-root "$PDK_ROOT" physical/config.json
+
+      - name: Collect run results
+        if: always()
+        run: |
+          mkdir -p physical_artifacts
+          if [ -d physical/runs ]; then
+            cp -r physical/runs physical_artifacts/
+          fi
+          echo 'Inspect metrics.json, reports, and final/ if the flow completed.'
+
+      - name: Upload physical reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: silicluster-sky130-physical
+          path: physical_artifacts/
+          if-no-files-found: warn
+          retention-days: 7

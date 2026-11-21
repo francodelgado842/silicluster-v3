@@ -67,15 +67,29 @@ jobs:
             "$IMAGE" -lc 'command -v librelane && librelane --version' \
             2>&1 | tee physical_artifacts/librelane-check.log
 
-      - name: Run SKY130 synthesis and physical flow
+      - name: Verify container can write Ciel PDK cache
         shell: bash
         run: |
           set -euo pipefail
           CONTAINER_SHELL="$(cat physical_artifacts/container-shell.txt)"
           docker run --rm \
             --entrypoint "$CONTAINER_SHELL" \
+            --mount "type=bind,source=$PDK_ROOT,target=/pdks" \
+            --env PDK_ROOT=/pdks \
+            "$IMAGE" -lc 'mkdir -p /pdks/ciel && test -w /pdks/ciel && echo "PASS: /pdks/ciel is writable"' \
+            2>&1 | tee physical_artifacts/pdk-write-check.log
+
+      - name: Run SKY130 synthesis and physical flow
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONTAINER_SHELL="$(cat physical_artifacts/container-shell.txt)"
+          # LibreLane 3.0.17 uses Ciel to manage PDK revisions and writes
+          # its own cache under /pdks/ciel. The mount MUST be writable.
+          docker run --rm \
+            --entrypoint "$CONTAINER_SHELL" \
             --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspace" \
-            --mount "type=bind,source=$PDK_ROOT,target=/pdks,readonly" \
+            --mount "type=bind,source=$PDK_ROOT,target=/pdks" \
             --workdir /workspace \
             --env PDK_ROOT=/pdks \
             "$IMAGE" -lc 'librelane --pdk-root /pdks /workspace/physical/config.json' \

@@ -1,1 +1,16 @@
-
+{
+  "DESIGN_NAME": "silicluster_emg_top",
+  "VERILOG_FILES": [
+    "dir::../silicluster_emg_core.v",
+    "dir::../silicluster_emg_top.v"
+  ],
+  "PDK": "sky130A",
+  "STD_CELL_LIBRARY": "sky130_fd_sc_hd",
+  "CLOCK_PORT": "clk",
+  "CLOCK_PERIOD": 100,
+  "FP_SIZING": "absolute",
+  "DIE_AREA": [0, 0, 180, 115],
+  "CORE_AREA": [10, 10, 170, 105],
+  "PL_TARGET_DENSITY_PCT": 45,
+  "RUN_KLAYOUT_XOR": false
+}

@@ -60,11 +60,31 @@ jobs:
           volare enable --pdk sky130 --pdk-root "$PDK_ROOT" "$OPEN_PDKS_REV" 2>&1 | tee physical_artifacts/pdk_install.log
           test -d "$PDK_ROOT/sky130A" || { echo 'PDK sky130A missing'; exit 1; }
 
-      - name: Run SKY130 synthesis and physical flow
+      - name: Run SKY130 synthesis and physical flow (non-interactive Docker)
         shell: bash
         run: |
           set -euo pipefail
-          librelane --dockerized --pdk-root "$PDK_ROOT" physical/config.json 2>&1 | tee physical_artifacts/physical_flow.log
+          mkdir -p physical_artifacts
+          echo 'Checking mounted PDK before running the flow...'
+          test -d "$PDK_ROOT/sky130A" || { echo 'Missing sky130A installation'; exit 1; }
+          echo 'Checking Docker image...'
+          docker image inspect ghcr.io/librelane/librelane:3.0.17 >/dev/null || docker pull ghcr.io/librelane/librelane:3.0.17
+          echo 'Checking LibreLane command INSIDE the container...'
+          docker run --rm \
+            --entrypoint /bin/bash \
+            ghcr.io/librelane/librelane:3.0.17 \
+            -lc 'command -v librelane && librelane --version'
+          echo 'Starting non-interactive physical flow (no -it and no TTY)...'
+          docker run --rm --init \
+            --user "$(id -u):$(id -g)" \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspace" \
+            --mount "type=bind,source=$PDK_ROOT,target=/pdks,readonly" \
+            --workdir /workspace \
+            --env PDK_ROOT=/pdks \
+            --entrypoint /bin/bash \
+            ghcr.io/librelane/librelane:3.0.17 \
+            -lc 'librelane --pdk-root /pdks physical/config.json' \
+            2>&1 | tee physical_artifacts/physical_flow.log
 
       - name: Collect run results
         if: always()

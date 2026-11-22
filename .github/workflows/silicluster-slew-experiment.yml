@@ -33,7 +33,7 @@ jobs:
           assert data['DIE_AREA'] == [0, 0, 180, 115], 'Unexpected DIE_AREA; stop to avoid modifying unreviewed configuration.'
           assert data['CORE_AREA'] == [10, 10, 170, 105], 'Unexpected CORE_AREA; stop to avoid modifying unreviewed configuration.'
           data['CORE_AREA'] = [5, 5, 175, 110]
-          data['MAX_FANOUT_CONSTRAINT'] = 4
+          data['MAX_FANOUT_CONSTRAINT'] = 5
           p.write_text(json.dumps(data, indent=2) + '\n')
           print('EXPERIMENT ONLY: core expanded from 160x95 to 170x105 um; DIE_AREA unchanged.')
           PYCODE

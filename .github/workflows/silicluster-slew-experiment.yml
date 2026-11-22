@@ -1,0 +1,156 @@
+name: Silicluster SKY130 Slew Experiment
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  physical:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      PDK_ROOT: ${{ github.workspace }}/pdks
+      IMAGE: ghcr.io/librelane/librelane:3.0.17
+      OPEN_PDKS_REV: c6d73a35f524070e85faff4a6a9eef49553ebc2b
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Experimental floorplan with larger core
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          p = Path('physical/config.json')
+          data = json.loads(p.read_text())
+          assert data['DIE_AREA'] == [0, 0, 180, 115], 'Unexpected DIE_AREA; stop to avoid modifying unreviewed configuration.'
+          assert data['CORE_AREA'] == [10, 10, 170, 105], 'Unexpected CORE_AREA; stop to avoid modifying unreviewed configuration.'
+          data['CORE_AREA'] = [5, 5, 175, 110]
+          p.write_text(json.dumps(data, indent=2) + '\n')
+          print('EXPERIMENT ONLY: core expanded from 160x95 to 170x105 um; DIE_AREA unchanged.')
+          PYCODE
+
+      - name: Check design configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m json.tool physical/config.json >/dev/null
+          test -s silicluster_emg_core.v
+          test -s silicluster_emg_top.v
+          mkdir -p physical_artifacts
+          echo 'RTL and config found.'
+
+      - name: Install Volare and authenticated SKY130 PDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --upgrade --break-system-packages volare
+          mkdir -p "$PDK_ROOT" physical_artifacts
+          volare enable --pdk sky130 --pdk-root "$PDK_ROOT" "$OPEN_PDKS_REV" \
+            2>&1 | tee physical_artifacts/volare-install.log
+          test -d "$PDK_ROOT/sky130A"
+          echo 'Confirmed sky130A installation.'
+
+      - name: Inspect actual Docker shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull "$IMAGE"
+          docker image inspect "$IMAGE" \
+            --format 'Entrypoint={{json .Config.Entrypoint}} Cmd={{json .Config.Cmd}}' \
+            | tee physical_artifacts/docker-image.txt
+          # The verified LibreLane 3.0.17 image has no ENTRYPOINT.
+          # Its CMD contains the actual Nix-installed zsh binary.
+          docker image inspect "$IMAGE" --format '{{json .Config.Cmd}}' \
+            | python3 -c 'import json,sys; cmd=json.load(sys.stdin); assert isinstance(cmd,list) and cmd and cmd[0].endswith("/zsh"), f"Unexpected Docker CMD: {cmd}"; print(cmd[0])' \
+            > physical_artifacts/container-shell.txt
+          echo "Container shell: $(cat physical_artifacts/container-shell.txt)"
+
+      - name: Confirm LibreLane executable inside container
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONTAINER_SHELL="$(cat physical_artifacts/container-shell.txt)"
+          docker run --rm \
+            --entrypoint "$CONTAINER_SHELL" \
+            "$IMAGE" -lc 'command -v librelane && librelane --version' \
+            2>&1 | tee physical_artifacts/librelane-check.log
+
+      - name: Verify container can write Ciel PDK cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONTAINER_SHELL="$(cat physical_artifacts/container-shell.txt)"
+          docker run --rm \
+            --entrypoint "$CONTAINER_SHELL" \
+            --mount "type=bind,source=$PDK_ROOT,target=/pdks" \
+            --env PDK_ROOT=/pdks \
+            "$IMAGE" -lc 'mkdir -p /pdks/ciel && test -w /pdks/ciel && echo "PASS: /pdks/ciel is writable"' \
+            2>&1 | tee physical_artifacts/pdk-write-check.log
+
+      - name: Run SKY130 synthesis and physical flow
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONTAINER_SHELL="$(cat physical_artifacts/container-shell.txt)"
+          # LibreLane 3.0.17 uses Ciel to manage PDK revisions and writes
+          # its own cache under /pdks/ciel. The mount MUST be writable.
+          docker run --rm \
+            --entrypoint "$CONTAINER_SHELL" \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspace" \
+            --mount "type=bind,source=$PDK_ROOT,target=/pdks" \
+            --workdir /workspace \
+            --env PDK_ROOT=/pdks \
+            "$IMAGE" -lc 'librelane --pdk-root /pdks /workspace/physical/config.json' \
+            2>&1 | tee physical_artifacts/physical-flow.log
+
+      - name: Summarize slew experiment
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PYCODE'
+          import glob, json, os
+          files = sorted(glob.glob('physical/runs/RUN_*/final/metrics.json'))
+          lines = ['## SKY130 slew experiment', '', 'Changed only CORE_AREA: [10,10,170,105] to [5,5,175,110].', 'Baseline: 269 maximum-slew violations; utilization 87.23%; setup slack +53.67 ns; hold slack +0.107 ns.', '']
+          if not files:
+              lines.append('No final metrics generated; inspect physical-flow.log.')
+          else:
+              m=json.load(open(files[-1]))
+              keys=['design__max_slew_violation__count', 'design__max_slew_violation__count__corner:max_ss_100C_1v60', 'design__instance__utilization', 'timing__setup__ws','timing__hold__ws', 'design__max_cap_violation__count', 'timing__setup_vio__count','timing__hold_vio__count']
+              for k in keys:
+                  lines.append(f'- `{k}`: **{m.get(k, "not present")}**')
+          text='\n'.join(lines)+'\n'
+          print(text)
+          with open('physical_artifacts/slew-experiment-summary.md','w') as f: f.write(text)
+          summary=os.getenv('GITHUB_STEP_SUMMARY')
+          if summary:
+              with open(summary,'a') as f: f.write(text)
+          PYCODE
+
+      - name: Collect reports
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p physical_artifacts
+          if [ -d physical/runs ]; then
+            cp -a physical/runs physical_artifacts/ || true
+          fi
+          find physical -maxdepth 4 -type f \
+            \( -name '*.json' -o -name '*.rpt' -o -name '*.log' \) \
+            > physical_artifacts/discovered-files.txt || true
+
+      - name: Upload physical reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: silicluster-sky130-slew-experiment
+          path: physical_artifacts/
+          if-no-files-found: warn
+          retention-days: 7

@@ -1,0 +1,55 @@
+name: Silicluster Submission ZIP Verification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-submission-zip:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install Icarus Verilog
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iverilog unzip
+      - name: Extract the exact candidate ZIP
+        run: |
+          test -f Silicluster_EMG_MAV64_entrega_minima.zip
+          mkdir -p submission-check
+          unzip -q Silicluster_EMG_MAV64_entrega_minima.zip -d submission-check
+          test -f submission-check/silicluster_emg_top.v
+          test -f submission-check/silicluster_emg_core.v
+          test -f submission-check/tb_emg_real.v
+          test -f submission-check/test/reposo_ch0.hex
+          test -f submission-check/test/cierre_ch0.hex
+      - name: Basic Verilog-2005 simulation
+        working-directory: submission-check
+        shell: bash
+        run: |
+          set -euo pipefail
+          iverilog -g2005 -Wall -s tb_silicluster -o basic.vvp \
+            silicluster_emg_core.v silicluster_emg_top.v tb_silicluster.v
+          vvp -n basic.vvp | tee basic-results.txt
+          grep -Fq 'PASS: Silicluster wrapper + status smoke test' basic-results.txt
+          if grep -Fq 'FAIL' basic-results.txt; then exit 1; fi
+      - name: Real EMG Verilog-2005 simulation
+        working-directory: submission-check
+        shell: bash
+        run: |
+          set -euo pipefail
+          iverilog -g2005 -Wall -s tb_emg_real -o emg.vvp \
+            silicluster_emg_core.v silicluster_emg_top.v tb_emg_real.v
+          vvp -n emg.vvp | tee emg-results.txt
+          grep -Fq 'PASS: 16000 real EMG samples; 250 MAV64 windows matched golden reference' emg-results.txt
+          if grep -Fq 'FAIL' emg-results.txt; then exit 1; fi
+      - name: Upload verification logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: silicluster-submission-verification
+          path: submission-check/*-results.txt
+          if-no-files-found: warn
